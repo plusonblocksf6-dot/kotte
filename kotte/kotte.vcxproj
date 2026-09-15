@@ -67,7 +67,6 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalIncludeDirectories>.\include;..\vendor\raylib\include;..\vendor\cpp_prngs\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
     </ClCompile>
@@ -90,7 +89,6 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <AdditionalIncludeDirectories>.\include;..\vendor\raylib\include;..\vendor\cpp_prngs\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <TreatWarningAsError>true</TreatWarningAsError>
     </ClCompile>
     <Link>
@@ -103,24 +101,16 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="camera.cpp" />
     <ClCompile Include="src\application.cpp" />
-    <ClCompile Include="src\camera.cpp" />
-    <ClCompile Include="src\entity_store.cpp" />
     <ClCompile Include="src\main.cpp" />
-    <ClCompile Include="src\renderer.cpp" />
-    <ClCompile Include="src\spatial_grid.cpp" />
     <ClCompile Include="src\tile_map.cpp" />
     <ClCompile Include="src\window.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="camera.hpp" />
     <ClInclude Include="include\kotte\application.hpp" />
-    <ClInclude Include="include\kotte\camera.hpp" />
-    <ClInclude Include="include\kotte\entity.hpp" />
-    <ClInclude Include="include\kotte\entity_handle.hpp" />
-    <ClInclude Include="include\kotte\entity_store.hpp" />
     <ClInclude Include="include\kotte\random.hpp" />
-    <ClInclude Include="include\kotte\renderer.hpp" />
-    <ClInclude Include="include\kotte\spatial_grid.hpp" />
     <ClInclude Include="include\kotte\tile_map.hpp" />
     <ClInclude Include="include\kotte\window.hpp" />
   </ItemGroup>

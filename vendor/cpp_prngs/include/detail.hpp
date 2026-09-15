@@ -89,7 +89,7 @@ namespace rnd{
 #if RND_ENABLE_SELFTESTS
 	namespace detail::selftest {
 		//quick-and-dirty test suite to make sure our 128-bit helper is constexpr and correct
-		// feel free to delete this namespace or gate it behind a macro so headers donâ€™t spam every TU. :)
+		// feel free to delete this namespace or gate it behind a macro so headers don’t spam every TU. :)
 
 		// 1. Verify Shift Logic
 		constexpr std::uint64_t HI = 0x0123'4567'89AB'CDEFull;

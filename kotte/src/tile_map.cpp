@@ -1,11 +1,63 @@
 #include "kotte/tile_map.hpp"
 
+#include <stdexcept>
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
+
 
 namespace kotte
 {
+    int TileRange::width() const noexcept
+    {
+        return last_x - first_x;
+    }
+
+    int TileRange::height() const noexcept
+    {
+        return last_y - first_y;
+    }
+
+    bool TileRange::empty() const noexcept
+    {
+        return width() <= 0 || height() <= 0;
+    }
+
+    std::size_t TileRange::cell_count() const noexcept
+    {
+        if (empty()) {
+            return 0;
+        }
+        return static_cast<std::size_t>(width())
+            * static_cast<std::size_t>(height());
+    }
+
+    TileRange TileMap::tiles_overlapping(
+        Rectangle world_rect, int tile_size) const noexcept
+    {
+        if (tile_size <= 0 || world_rect.width <= 0.0f || world_rect.height <= 0.0f) {
+            return {};
+        }
+
+        const float size = static_cast<float>(tile_size);
+        const float right = world_rect.x + world_rect.width;
+        const float bottom = world_rect.y + world_rect.height;
+
+        const int first_x = std::max(0,
+            static_cast<int>(std::floor(world_rect.x / size)));
+        const int first_y = std::max(0,
+            static_cast<int>(std::floor(world_rect.y / size)));
+        const int last_x = std::min(width_,
+            static_cast<int>(std::floor(right / size)) + 1);
+        const int last_y = std::min(height_,
+            static_cast<int>(std::floor(bottom / size)) + 1);
+
+        if (last_x <= first_x || last_y <= first_y) {
+            return {};
+        }
+
+        return TileRange{ first_x, last_x, first_y, last_y };
+    }
+
     TileMap::TileMap(int width, int height)
         : width_{width}
         , height_{height}
@@ -39,25 +91,6 @@ namespace kotte
 
     const Tile& TileMap::at(int x, int y) const{
         return tiles_.at(index(x, y));
-    }
-
-    TileRange TileMap::tiles_overlapping(Rectangle world_view, int tile_size) const noexcept{
-        if(tile_size <= 0){
-            return {};
-        }
-
-        const float tile_extent = static_cast<float>(tile_size);
-        const int first_column = static_cast<int>(std::floor(world_view.x / tile_extent));
-        const int first_row = static_cast<int>(std::floor(world_view.y / tile_extent));
-        const int past_last_column = static_cast<int>(std::ceil((world_view.x + world_view.width) / tile_extent));
-        const int past_last_row = static_cast<int>(std::ceil((world_view.y + world_view.height) / tile_extent));
-
-        return {
-            std::clamp(first_column, 0, width_),
-            std::clamp(first_row, 0, height_),
-            std::clamp(past_last_column, 0, width_),
-            std::clamp(past_last_row, 0, height_)
-        };
     }
 
     std::size_t TileMap::index(int x, int y) const{
