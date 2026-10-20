@@ -62,6 +62,14 @@ namespace kotte
             enemy
         };
 
+        // The round is the authority on whether gameplay may run at all.
+        // Won and Lost are terminal: once entered, the round never changes again.
+        enum class RoundState : std::uint8_t {
+            playing,
+            won,
+            lost
+        };
+
         struct FrameActions final {
             Vector2 player_movement_direction{};
             bool place_bomb = false;
@@ -109,6 +117,7 @@ namespace kotte
         void queue_bomb_placement();
         void request_player_defeat(DefeatCause cause) noexcept;
         void apply_player_defeat() noexcept;
+        void update_round_state() noexcept;
         void apply_entity_destructions();
         void apply_bomb_placements();
         [[nodiscard]] bool resolve_blast_tile(
@@ -131,6 +140,9 @@ namespace kotte
         [[nodiscard]] Entity& player() noexcept;
         [[nodiscard]] const Entity& player() const noexcept;
         [[nodiscard]] bool player_is_alive() const noexcept;
+        [[nodiscard]] bool round_is_playing() const noexcept;
+        [[nodiscard]] bool objective_complete() const noexcept;
+        [[nodiscard]] static const char* round_state_name(RoundState state) noexcept;
         [[nodiscard]] Rectangle entity_world_bounds(const Entity& entity) const noexcept;
         [[nodiscard]] Rectangle entity_collision_bounds(const Entity& entity) const noexcept;
         [[nodiscard]] Rectangle player_hurt_bounds(const Entity& player_entity) const noexcept;
@@ -153,6 +165,9 @@ namespace kotte
         // Solid movers never overlap, so enemy contact is tested against the
         // player's collision footprint grown by this margin.
         static constexpr float player_hurt_margin_ = 4.0f;
+        // Objective: defeat this many enemies. Clamped at startup to the number
+        // of enemies the seed actually generated, so the round is always winnable.
+        static constexpr std::size_t enemies_to_defeat_ = 10;
         static constexpr float bomb_fuse_seconds_ = 2.0f;
         static constexpr std::uint8_t bomb_blast_range_ = 3;
         static constexpr float blast_effect_seconds_ = 0.35f;
@@ -191,6 +206,9 @@ namespace kotte
         PlayerState player_state_ = PlayerState::alive;
         DefeatCause defeat_cause_ = DefeatCause::blast;
         std::size_t player_defeats_ = 0;
+        RoundState round_state_ = RoundState::playing;
+        std::size_t enemy_target_ = 0;
+        std::size_t enemies_defeated_ = 0;
         bool exit_requested_ = false;
     };
 }

@@ -26,6 +26,11 @@ namespace kotte
             , seed_{ seed } {
         populate_entities();
         initialize_enemies();
+
+        // Never ask for more enemies than this seed generated, so the objective
+        // can always be completed. Every enemy is reachable because crates are
+        // destructible and the room has no interior walls.
+        enemy_target_ = std::min(enemies_to_defeat_, enemy_handles_.size());
     }
 
     void Application::run() {
@@ -72,8 +77,9 @@ namespace kotte
             request_exit();
         }
 
-        // A defeated player produces no gameplay intent: no movement, no bombs.
-        if (!player_is_alive()) {
+        // Once the round is won or lost, input produces no gameplay intent:
+        // no movement and no bombs. Quitting still works.
+        if (!round_is_playing()) {
             return;
         }
 
@@ -100,10 +106,13 @@ namespace kotte
     }
 
     void Application::update_gameplay(float delta_time) {
-        // The player and every enemy are movers; each asks its own collision question.
-        if (player_is_alive()) {
-            update_player(delta_time);
+        // After Won/Lost the world freezes: player, enemies, and contact checks stop.
+        if (!round_is_playing()) {
+            return;
         }
+
+        // The player and every enemy are movers; each asks its own collision question.
+        update_player(delta_time);
         update_enemies(delta_time);
         // Runs after every mover so it sees this frame's final positions.
         detect_player_enemy_contact();
@@ -111,6 +120,11 @@ namespace kotte
     }
 
     void Application::update_timed_gameplay(float delta_time) {
+        // Fuses stop with the round, so no bomb can change the result afterwards.
+        if (!round_is_playing()) {
+            return;
+        }
+
         // This list is independent of camera queries, so off-screen fuses advance.
         for (const EntityHandle bomb_handle : active_bomb_handles_) {
             Entity* bomb = entities_.try_get(bomb_handle);
@@ -140,6 +154,12 @@ namespace kotte
     }
 
     void Application::resolve_gameplay_facts() {
+        // No new blast consequences once the round has ended.
+        if (!round_is_playing()) {
+            bomb_detonated_facts_.clear();
+            return;
+        }
+
         for (const BombDetonated& fact : bomb_detonated_facts_) {
             BlastEffect effect;
             effect.remaining_seconds = blast_effect_seconds_;
@@ -170,6 +190,10 @@ namespace kotte
         apply_player_defeat();
         apply_entity_destructions();
         apply_bomb_placements();
+
+        // Decide the round only after every mutation this frame has landed, so
+        // a death and the final kill from the same blast are both visible here.
+        update_round_state();
     }
 
     void Application::update_presentation(float delta_time) {
@@ -315,10 +339,29 @@ namespace kotte
     void Application::request_player_defeat(DefeatCause cause) noexcept {
         // Detection only records the decision. The first hit this frame keeps
         // its cause; later hits in the same frame collapse into it.
-        if (!player_is_alive() || player_defeat_request_.has_value()) {
+        if (!round_is_playing() || !player_is_alive() || player_defeat_request_.has_value()) {
             return;
         }
         player_defeat_request_ = PlayerDefeatRequest{ cause };
+    }
+
+    void Application::update_round_state() noexcept {
+        // Won and Lost are terminal; nothing can move the round out of them.
+        if (!round_is_playing()) {
+            return;
+        }
+
+        // PRIORITY RULE: loss is checked before victory. If the player dies in
+        // the same frame the objective completes (e.g. one blast kills the last
+        // target enemy and the player), the round is Lost.
+        if (!player_is_alive()) {
+            round_state_ = RoundState::lost;
+            return;
+        }
+
+        if (objective_complete()) {
+            round_state_ = RoundState::won;
+        }
     }
 
     void Application::apply_player_defeat() noexcept {
@@ -399,6 +442,8 @@ namespace kotte
             switch (target->kind) {
             case EntityKind::enemy:
                 std::erase(enemy_handles_, request.entity);
+                // Counted here, after de-duplication, so one enemy is one kill.
+                ++enemies_defeated_;
                 break;
             case EntityKind::bomb:
                 // Removing the bomb also lets its owner place a new one.
@@ -643,22 +688,54 @@ namespace kotte
             collision_diagnostics_.hurt_hits);
         DrawText(diagnostics.c_str(), 10, 130, 20, RAYWHITE);
 
-        if (!player_is_alive()) {
-            const char* cause_text = defeat_cause_ == DefeatCause::blast
-                ? "caught in a blast"
-                : "caught by an enemy";
-            const std::string headline = std::format("DEFEATED - {}", cause_text);
+        // Round state and objective, centred at the top of the screen.
+        {
+            const std::string objective = std::format(
+                "{} | objective: defeat {} enemies ({}/{})",
+                round_state_name(round_state_),
+                enemy_target_,
+                std::min(enemies_defeated_, enemy_target_),
+                enemy_target_);
+            constexpr int objective_size = 24;
+            const int objective_width = MeasureText(objective.c_str(), objective_size);
+            const int objective_x = (GetScreenWidth() - objective_width) / 2;
+            DrawRectangle(objective_x - 10, 160, objective_width + 20, objective_size + 12, Color{ 0, 0, 0, 160 });
+            DrawText(objective.c_str(), objective_x, 166, objective_size, RAYWHITE);
+        }
+
+        if (!round_is_playing()) {
+            std::string headline;
+            Color headline_color = RAYWHITE;
+            if (round_state_ == RoundState::won) {
+                headline = "VICTORY - objective complete";
+                headline_color = Color{ 0x7c, 0xd9, 0x6f, 0xff };
+            }
+            else {
+                const char* cause_text = defeat_cause_ == DefeatCause::blast
+                    ? "caught in a blast"
+                    : "caught by an enemy";
+                headline = std::format("DEFEATED - {}", cause_text);
+                headline_color = Color{ 0xe8, 0x5d, 0x5d, 0xff };
+            }
+
             constexpr int headline_size = 40;
             constexpr int hint_size = 20;
             const char* hint = "press Q or Escape to quit";
             const int centre_x = GetScreenWidth() / 2;
             const int centre_y = GetScreenHeight() / 2;
+            const int headline_width = MeasureText(headline.c_str(), headline_size);
+            DrawRectangle(
+                centre_x - headline_width / 2 - 20,
+                centre_y - headline_size - 16,
+                headline_width + 40,
+                headline_size + hint_size + 48,
+                Color{ 0, 0, 0, 190 });
             DrawText(
                 headline.c_str(),
-                centre_x - MeasureText(headline.c_str(), headline_size) / 2,
+                centre_x - headline_width / 2,
                 centre_y - headline_size,
                 headline_size,
-                RAYWHITE);
+                headline_color);
             DrawText(
                 hint,
                 centre_x - MeasureText(hint, hint_size) / 2,
@@ -746,6 +823,23 @@ namespace kotte
 
     bool Application::player_is_alive() const noexcept {
         return player_state_ == PlayerState::alive;
+    }
+
+    bool Application::round_is_playing() const noexcept {
+        return round_state_ == RoundState::playing;
+    }
+
+    bool Application::objective_complete() const noexcept {
+        return enemies_defeated_ >= enemy_target_;
+    }
+
+    const char* Application::round_state_name(RoundState state) noexcept {
+        switch (state) {
+        case RoundState::playing: return "PLAYING";
+        case RoundState::won: return "WON";
+        case RoundState::lost: return "LOST";
+        }
+        return "UNKNOWN";
     }
 
     Rectangle Application::entity_world_bounds(const Entity& entity) const noexcept {
