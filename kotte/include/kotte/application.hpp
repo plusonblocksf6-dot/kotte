@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <raylib.h>
 #include <string_view>
 #include <vector>
@@ -29,9 +30,13 @@ namespace kotte
         std::size_t boundary_blocks = 0;
         std::size_t blocked_moves = 0;
         std::size_t enemy_turns = 0;
+        // Player hurt detection: broad-phase candidates vs confirmed hits.
+        std::size_t hurt_candidates = 0;
+        std::size_t hurt_exact_tests = 0;
+        std::size_t hurt_hits = 0;
     };
 
-    class Application final{
+    class Application final {
     public:
         Application(
             int window_width,
@@ -47,6 +52,16 @@ namespace kotte
         void request_exit() noexcept;
 
     private:
+        enum class PlayerState : std::uint8_t {
+            alive,
+            defeated
+        };
+
+        enum class DefeatCause : std::uint8_t {
+            blast,
+            enemy
+        };
+
         struct FrameActions final {
             Vector2 player_movement_direction{};
             bool place_bomb = false;
@@ -68,6 +83,12 @@ namespace kotte
             EntityHandle entity;
         };
 
+        // At most one per frame: the first confirmed hit wins and later hits
+        // in the same frame collapse into it.
+        struct PlayerDefeatRequest final {
+            DefeatCause cause = DefeatCause::blast;
+        };
+
         struct BlastEffect final {
             std::vector<Vector2> tile_centres;
             float remaining_seconds = 0.0f;
@@ -84,7 +105,10 @@ namespace kotte
         void update_player(float delta_time);
         void try_move_player(Vector2 axis_displacement);
         void update_enemies(float delta_time);
+        void detect_player_enemy_contact();
         void queue_bomb_placement();
+        void request_player_defeat(DefeatCause cause) noexcept;
+        void apply_player_defeat() noexcept;
         void apply_entity_destructions();
         void apply_bomb_placements();
         [[nodiscard]] bool resolve_blast_tile(
@@ -106,8 +130,10 @@ namespace kotte
         [[nodiscard]] const Entity& entity(EntityHandle handle) const noexcept;
         [[nodiscard]] Entity& player() noexcept;
         [[nodiscard]] const Entity& player() const noexcept;
+        [[nodiscard]] bool player_is_alive() const noexcept;
         [[nodiscard]] Rectangle entity_world_bounds(const Entity& entity) const noexcept;
         [[nodiscard]] Rectangle entity_collision_bounds(const Entity& entity) const noexcept;
+        [[nodiscard]] Rectangle player_hurt_bounds(const Entity& player_entity) const noexcept;
         [[nodiscard]] bool entity_movement_is_blocked(
             EntityHandle moving_entity_handle,
             Vector2 proposed_position);
@@ -124,21 +150,25 @@ namespace kotte
         static constexpr float spatial_cell_size_ = tile_size_ * spatial_cell_tiles_;
         static constexpr float player_speed_ = 240.0f;
         static constexpr float enemy_speed_ = 80.0f;
+        // Solid movers never overlap, so enemy contact is tested against the
+        // player's collision footprint grown by this margin.
+        static constexpr float player_hurt_margin_ = 4.0f;
         static constexpr float bomb_fuse_seconds_ = 2.0f;
         static constexpr std::uint8_t bomb_blast_range_ = 3;
         static constexpr float blast_effect_seconds_ = 0.35f;
-        static constexpr Color background_color_{0x11, 0x22, 0x33, 0xff};
+        static constexpr Color background_color_{ 0x11, 0x22, 0x33, 0xff };
         static constexpr Color floor_colors_[3]{
             Color{0x38, 0x49, 0x52, 0xff},
             Color{0x3d, 0x4f, 0x59, 0xff},
             Color{0x42, 0x55, 0x60, 0xff}
         };
-        static constexpr Color player_color_{0xf2, 0xc1, 0x4e, 0xff};
-        static constexpr Color bomb_color_{0x20, 0x24, 0x2a, 0xff};
-        static constexpr Color blast_color_{0xf2, 0x8f, 0x3b, 0xe8};
-        static constexpr Color crate_color_{0xb0, 0x72, 0x3c, 0xff};
-        static constexpr Color enemy_color_{0xd9, 0x4f, 0x70, 0xff};
-        static constexpr Color wall_color_{0x78, 0x5f, 0x47, 0xff};
+        static constexpr Color player_color_{ 0xf2, 0xc1, 0x4e, 0xff };
+        static constexpr Color defeated_player_color_{ 0x8a, 0x8f, 0x96, 0xff };
+        static constexpr Color bomb_color_{ 0x20, 0x24, 0x2a, 0xff };
+        static constexpr Color blast_color_{ 0xf2, 0x8f, 0x3b, 0xe8 };
+        static constexpr Color crate_color_{ 0xb0, 0x72, 0x3c, 0xff };
+        static constexpr Color enemy_color_{ 0xd9, 0x4f, 0x70, 0xff };
+        static constexpr Color wall_color_{ 0x78, 0x5f, 0x47, 0xff };
 
         Window window_; // Constructed first, destroyed last.
         Camera camera_;
@@ -153,10 +183,14 @@ namespace kotte
         std::vector<PlaceBombRequest> place_bomb_requests_;
         std::vector<BombDetonated> bomb_detonated_facts_;
         std::vector<DestroyEntityRequest> destroy_entity_requests_;
+        std::optional<PlayerDefeatRequest> player_defeat_request_;
         std::vector<BlastEffect> blast_effects_;
         CollisionDiagnostics collision_diagnostics_;
         std::uint64_t seed_;
         EntityHandle player_handle_;
+        PlayerState player_state_ = PlayerState::alive;
+        DefeatCause defeat_cause_ = DefeatCause::blast;
+        std::size_t player_defeats_ = 0;
         bool exit_requested_ = false;
     };
 }
