@@ -27,6 +27,10 @@ namespace kotte
         float fuse_remaining = 0.0f;
         std::uint8_t blast_range = 0;
         bool detonation_requested = false;
+        // False while the owner is still standing on the bomb it just placed.
+        // Becomes true the first frame the owner no longer overlaps it, and
+        // never goes back: from then on the bomb blocks its owner too.
+        bool owner_escaped = false;
     };
 
     struct Entity final {

@@ -121,6 +121,8 @@ namespace kotte
         // The player and every enemy are movers; each asks its own collision question.
         update_player(delta_time);
         update_enemies(delta_time);
+        // After every mover: a bomb's owner has escaped once they stop overlapping it.
+        update_bomb_owner_escapes();
         // Runs after every mover so it sees this frame's final positions.
         detect_player_enemy_contact();
         queue_bomb_placement();
@@ -338,6 +340,33 @@ namespace kotte
         }
     }
 
+    void Application::update_bomb_owner_escapes() {
+        for (const EntityHandle bomb_handle : active_bomb_handles_) {
+            Entity* bomb = entities_.try_get(bomb_handle);
+            if (bomb == nullptr || !bomb->bomb_state.has_value()
+                || bomb->bomb_state->owner_escaped) {
+                continue;
+            }
+
+            BombState& state = *bomb->bomb_state;
+
+            // Resolve the owner through the store every time instead of keeping
+            // a pointer. If the handle no longer resolves (owner destroyed, or
+            // a restart bumped the generation), nobody holds the exception.
+            const Entity* owner = entities_.try_get(state.owner);
+            if (owner == nullptr) {
+                state.owner_escaped = true;
+                continue;
+            }
+
+            // "Fully left" means the gameplay footprints no longer overlap.
+            // One-way: once set, the bomb blocks its owner from re-entering.
+            if (!CheckCollisionRecs(entity_collision_bounds(*owner), entity_collision_bounds(*bomb))) {
+                state.owner_escaped = true;
+            }
+        }
+    }
+
     void Application::queue_bomb_placement() {
         if (!frame_actions_.place_bomb) {
             return;
@@ -468,8 +497,11 @@ namespace kotte
     void Application::apply_bomb_placements() {
         for (const PlaceBombRequest& request : place_bomb_requests_) {
             const Entity* owner = entities_.try_get(request.owner);
+            // Reject: owner gone or not a player, owner already has a bomb, or
+            // a live bomb already occupies this tile.
             if (owner == nullptr || owner->kind != EntityKind::player
-                || owner_has_active_bomb(request.owner)) {
+                || owner_has_active_bomb(request.owner)
+                || tile_has_live_bomb(request.world_position)) {
                 continue;
             }
 
@@ -996,14 +1028,15 @@ namespace kotte
 
         bool blocked = false;
 
-        // Filter: remove the mover and non-solid kinds before exact testing.
+        // Filter: remove the mover and anything that does not block this mover
+        // (including a bomb its owner has not yet escaped) before exact testing.
         for (const EntityHandle candidate_handle : spatial_query.entity_handles) {
             if (candidate_handle == moving_entity_handle) {
                 continue;
             }
 
             const Entity* candidate = entities_.try_get(candidate_handle);
-            if (candidate == nullptr || !is_solid(candidate->kind)) {
+            if (candidate == nullptr || !blocks_mover(moving_entity_handle, *candidate)) {
                 continue;
             }
 
@@ -1023,12 +1056,52 @@ namespace kotte
         case EntityKind::player:
         case EntityKind::crate:
         case EntityKind::enemy:
-            return true;
         case EntityKind::bomb:
-            return false;
+            // Bombs are solid. Their owner's escape exception is handled per
+            // mover in blocks_mover(), not by making the kind non-solid.
+            return true;
         }
 
         return false;
+    }
+
+    bool Application::blocks_mover(
+        EntityHandle moving_entity_handle,
+        const Entity& candidate) const noexcept {
+        if (candidate.kind == EntityKind::bomb && candidate.bomb_state.has_value()) {
+            const BombState& state = *candidate.bomb_state;
+
+            // Owner exception, all three must hold:
+            // - the owner has not escaped yet,
+            // - the mover IS the owner: full handle equality (slot AND
+            //   generation), so a new entity reusing the slot does not match,
+            // - the owner handle still resolves to a live entity.
+            // Any other mover (every enemy) fails the identity check and is blocked.
+            const bool owner_may_pass = !state.owner_escaped
+                && moving_entity_handle == state.owner
+                && entities_.contains(state.owner);
+            return !owner_may_pass;
+        }
+
+        return is_solid(candidate.kind);
+    }
+
+    bool Application::tile_has_live_bomb(Vector2 world_position) const noexcept {
+        const float tile_extent = static_cast<float>(tile_size_);
+        const int column = static_cast<int>(std::floor(world_position.x / tile_extent));
+        const int row = static_cast<int>(std::floor(world_position.y / tile_extent));
+
+        // Compare tile coordinates, not floats. Only live bombs count: a
+        // destroyed bomb's handle no longer resolves through the store.
+        return std::ranges::any_of(active_bomb_handles_, [&](EntityHandle bomb_handle) {
+            const Entity* bomb = entities_.try_get(bomb_handle);
+            if (bomb == nullptr || bomb->kind != EntityKind::bomb) {
+                return false;
+            }
+            const int bomb_column = static_cast<int>(std::floor(bomb->world_position.x / tile_extent));
+            const int bomb_row = static_cast<int>(std::floor(bomb->world_position.y / tile_extent));
+            return bomb_column == column && bomb_row == row;
+            });
     }
 
     Vector2 Application::cardinal_vector(CardinalDirection direction) noexcept {

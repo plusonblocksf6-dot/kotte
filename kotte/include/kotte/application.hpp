@@ -115,6 +115,7 @@ namespace kotte
         void try_move_player(Vector2 axis_displacement);
         void update_enemies(float delta_time);
         void detect_player_enemy_contact();
+        void update_bomb_owner_escapes();
         void queue_bomb_placement();
         void request_player_defeat(DefeatCause cause) noexcept;
         void apply_player_defeat() noexcept;
@@ -153,6 +154,10 @@ namespace kotte
             EntityHandle moving_entity_handle,
             Vector2 proposed_position);
         [[nodiscard]] static bool is_solid(EntityKind kind) noexcept;
+        [[nodiscard]] bool blocks_mover(
+            EntityHandle moving_entity_handle,
+            const Entity& candidate) const noexcept;
+        [[nodiscard]] bool tile_has_live_bomb(Vector2 world_position) const noexcept;
         [[nodiscard]] static Vector2 cardinal_vector(CardinalDirection direction) noexcept;
         [[nodiscard]] CardinalDirection different_enemy_direction(CardinalDirection current_direction);
         [[nodiscard]] bool owner_has_active_bomb(EntityHandle owner) const noexcept;
