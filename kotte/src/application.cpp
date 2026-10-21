@@ -19,11 +19,17 @@ namespace kotte
         : window_{ width, height, title, target_fps }
         , camera_{ window_.size() }
         , random_{ seed }
-        , map_{ make_room(200, 120, random_) }
+        , map_{ make_room(map_columns_, map_rows_, random_) }
         , spatial_grid_{ {
             static_cast<float>(map_.width() * tile_size_),
             static_cast<float>(map_.height() * tile_size_)}, spatial_cell_size_ }
             , seed_{ seed } {
+        populate_round();
+    }
+
+    void Application::populate_round() {
+        // Shared by the constructor and restart: same calls, same order, so the
+        // same seed produces the same layout and enemy headings.
         populate_entities();
         initialize_enemies();
 
@@ -78,8 +84,9 @@ namespace kotte
         }
 
         // Once the round is won or lost, input produces no gameplay intent:
-        // no movement and no bombs. Quitting still works.
+        // no movement and no bombs. Quitting and restarting still work.
         if (!round_is_playing()) {
+            frame_actions_.restart_round = IsKeyPressed(KEY_R);
             return;
         }
 
@@ -187,6 +194,14 @@ namespace kotte
 
     void Application::apply_structural_mutations() {
         // Entity storage and every derived index change only at this boundary.
+
+        // Restart is the largest structural mutation of all, so it happens here
+        // too. It replaces the whole round, so nothing else is applied this frame.
+        if (frame_actions_.restart_round) {
+            restart_round();
+            return;
+        }
+
         apply_player_defeat();
         apply_entity_destructions();
         apply_bomb_placements();
@@ -383,6 +398,71 @@ namespace kotte
         player_state_ = PlayerState::defeated;
         defeat_cause_ = request.cause;
         ++player_defeats_;
+    }
+
+    void Application::restart_round() {
+        // 1. Destroy every old-round entity THROUGH the store, never by replacing
+        //    it. A fresh store would restart generations, so an old handle such
+        //    as {slot 5, generation 1} could match a new-round entity in slot 5.
+        //    Destroying bumps each slot's generation instead, so any old handle
+        //    that survives anywhere resolves to nullptr from now on.
+        //
+        //    Every live entity is in the spatial grid, so a query covering the
+        //    whole grid finds them all, crates included.
+        const Rectangle whole_grid{
+            0.0f,
+            0.0f,
+            static_cast<float>(spatial_grid_.columns()) * spatial_grid_.cell_size(),
+            static_cast<float>(spatial_grid_.rows()) * spatial_grid_.cell_size()
+        };
+        const SpatialQuery everything = spatial_grid_.query(whole_grid);
+        for (const EntityHandle handle : everything.entity_handles) {
+            const Entity* old_entity = entities_.try_get(handle);
+            assert(old_entity != nullptr);
+            if (old_entity == nullptr) {
+                continue;
+            }
+
+            // Grid first while the bounds are known, then the store.
+            spatial_grid_.remove(handle, entity_world_bounds(*old_entity));
+            const bool destroyed = entities_.destroy(handle);
+            assert(destroyed);
+            (void)destroyed;
+        }
+
+        // If this fails, an entity existed that the grid did not know about.
+        assert(entities_.live_count() == 0);
+
+        // 2. Drop every non-owning view of the old round. These handles are now
+        //    stale anyway, but keeping them would make the lists lie.
+        enemy_handles_.clear();
+        active_bomb_handles_.clear();
+        player_handle_ = EntityHandle{};
+
+        // 3. Discard everything still in flight: requests, facts, effects, input.
+        place_bomb_requests_.clear();
+        bomb_detonated_facts_.clear();
+        destroy_entity_requests_.clear();
+        player_defeat_request_.reset();
+        blast_effects_.clear();
+        frame_actions_ = {};
+
+        // 4. Reset round and player state.
+        player_state_ = PlayerState::alive;
+        defeat_cause_ = DefeatCause::blast;
+        player_defeats_ = 0;
+        round_state_ = RoundState::playing;
+        enemies_defeated_ = 0;
+        ++round_number_;
+
+        // 5. Rebuild from the original seed: reset the dice, regenerate the map,
+        //    then repeat the constructor's population sequence exactly.
+        random_ = Random{ seed_ };
+        map_ = make_room(map_columns_, map_rows_, random_);
+        populate_round();
+
+        // 6. Snap the camera to the new player before this frame is drawn.
+        update_camera(0.0f);
     }
 
     void Application::apply_bomb_placements() {
@@ -691,7 +771,8 @@ namespace kotte
         // Round state and objective, centred at the top of the screen.
         {
             const std::string objective = std::format(
-                "{} | objective: defeat {} enemies ({}/{})",
+                "round {} | {} | objective: defeat {} enemies ({}/{})",
+                round_number_,
                 round_state_name(round_state_),
                 enemy_target_,
                 std::min(enemies_defeated_, enemy_target_),
@@ -720,7 +801,7 @@ namespace kotte
 
             constexpr int headline_size = 40;
             constexpr int hint_size = 20;
-            const char* hint = "press Q or Escape to quit";
+            const char* hint = "press R to restart | Q or Escape to quit";
             const int centre_x = GetScreenWidth() / 2;
             const int centre_y = GetScreenHeight() / 2;
             const int headline_width = MeasureText(headline.c_str(), headline_size);
@@ -751,7 +832,7 @@ namespace kotte
             "world: {} x {} tiles | {} total", map_.width(), map_.height(), map_.tile_count());
         DrawText(diagnostics.c_str(), 10, window_.height() - 54, 20, RAYWHITE);
 
-        DrawText("move: WASD/arrows | bomb: Space | quit: Q/Escape", 10, window_.height() - 30, 20, LIGHTGRAY);
+        DrawText("move: WASD/arrows | bomb: Space | restart (after round): R | quit: Q/Escape", 10, window_.height() - 30, 20, LIGHTGRAY);
     }
 
     void Application::populate_entities() {

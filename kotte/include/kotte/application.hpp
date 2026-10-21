@@ -73,6 +73,7 @@ namespace kotte
         struct FrameActions final {
             Vector2 player_movement_direction{};
             bool place_bomb = false;
+            bool restart_round = false;
         };
 
         struct PlaceBombRequest final {
@@ -118,6 +119,7 @@ namespace kotte
         void request_player_defeat(DefeatCause cause) noexcept;
         void apply_player_defeat() noexcept;
         void update_round_state() noexcept;
+        void restart_round();
         void apply_entity_destructions();
         void apply_bomb_placements();
         [[nodiscard]] bool resolve_blast_tile(
@@ -133,6 +135,7 @@ namespace kotte
             std::uint8_t range);
         void update_camera(float delta_time) noexcept;
         void render();
+        void populate_round();
         void populate_entities();
         void initialize_enemies();
         [[nodiscard]] Entity& entity(EntityHandle handle) noexcept;
@@ -158,6 +161,9 @@ namespace kotte
         [[nodiscard]] static Color entity_color(EntityKind kind) noexcept;
         [[nodiscard]] static float entity_roundness(EntityKind kind) noexcept;
         static constexpr int tile_size_ = 40;
+        // Shared by the constructor and restart so both build the same layout.
+        static constexpr int map_columns_ = 200;
+        static constexpr int map_rows_ = 120;
         static constexpr int spatial_cell_tiles_ = 8;
         static constexpr float spatial_cell_size_ = tile_size_ * spatial_cell_tiles_;
         static constexpr float player_speed_ = 240.0f;
@@ -209,6 +215,7 @@ namespace kotte
         RoundState round_state_ = RoundState::playing;
         std::size_t enemy_target_ = 0;
         std::size_t enemies_defeated_ = 0;
+        std::size_t round_number_ = 1;
         bool exit_requested_ = false;
     };
 }
