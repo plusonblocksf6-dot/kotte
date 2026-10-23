@@ -79,6 +79,18 @@ namespace kotte
         struct PlaceBombRequest final {
             EntityHandle owner;
             Vector2 world_position{};
+            // Captured when the request is made and copied into the bomb, so
+            // later pickups never change a bomb that already exists.
+            std::uint8_t blast_range = 0;
+        };
+
+        struct CollectPickupRequest final {
+            EntityHandle pickup;
+        };
+
+        struct TileCoordinate final {
+            int column = 0;
+            int row = 0;
         };
 
         struct BombDetonated final {
@@ -116,6 +128,10 @@ namespace kotte
         void update_enemies(float delta_time);
         void detect_player_enemy_contact();
         void update_bomb_owner_escapes();
+        void detect_player_pickup_contact();
+        void apply_pickup_collections();
+        void spawn_pickups();
+        [[nodiscard]] static bool is_pickup_tile(int column, int row) noexcept;
         void queue_bomb_placement();
         void request_player_defeat(DefeatCause cause) noexcept;
         void apply_player_defeat() noexcept;
@@ -180,7 +196,18 @@ namespace kotte
         // of enemies the seed actually generated, so the round is always winnable.
         static constexpr std::size_t enemies_to_defeat_ = 10;
         static constexpr float bomb_fuse_seconds_ = 2.0f;
-        static constexpr std::uint8_t bomb_blast_range_ = 3;
+        static constexpr std::uint8_t bomb_blast_range_ = 3; // starting range
+        // Each pickup adds one tile. Three fixed pickups take 3 to the cap of 6:
+        // twice the starting reach, still well short of crossing a screen.
+        static constexpr std::uint8_t blast_range_per_pickup_ = 1;
+        static constexpr std::uint8_t max_blast_range_ = 6;
+        // Fixed pickup tiles near the spawn at (2, 2). The room has no interior
+        // walls, so every one is reachable.
+        static constexpr TileCoordinate pickup_tiles_[]{
+            {6, 2},
+            {2, 7},
+            {9, 9}
+        };
         static constexpr float blast_effect_seconds_ = 0.35f;
         static constexpr Color background_color_{ 0x11, 0x22, 0x33, 0xff };
         static constexpr Color floor_colors_[3]{
@@ -191,6 +218,7 @@ namespace kotte
         static constexpr Color player_color_{ 0xf2, 0xc1, 0x4e, 0xff };
         static constexpr Color defeated_player_color_{ 0x8a, 0x8f, 0x96, 0xff };
         static constexpr Color bomb_color_{ 0x20, 0x24, 0x2a, 0xff };
+        static constexpr Color pickup_color_{ 0x5d, 0xd8, 0xe8, 0xff };
         static constexpr Color blast_color_{ 0xf2, 0x8f, 0x3b, 0xe8 };
         static constexpr Color crate_color_{ 0xb0, 0x72, 0x3c, 0xff };
         static constexpr Color enemy_color_{ 0xd9, 0x4f, 0x70, 0xff };
@@ -209,6 +237,7 @@ namespace kotte
         std::vector<PlaceBombRequest> place_bomb_requests_;
         std::vector<BombDetonated> bomb_detonated_facts_;
         std::vector<DestroyEntityRequest> destroy_entity_requests_;
+        std::vector<CollectPickupRequest> collect_pickup_requests_;
         std::optional<PlayerDefeatRequest> player_defeat_request_;
         std::vector<BlastEffect> blast_effects_;
         CollisionDiagnostics collision_diagnostics_;
@@ -221,6 +250,7 @@ namespace kotte
         std::size_t enemy_target_ = 0;
         std::size_t enemies_defeated_ = 0;
         std::size_t round_number_ = 1;
+        std::uint8_t player_blast_range_ = bomb_blast_range_;
         bool exit_requested_ = false;
     };
 }

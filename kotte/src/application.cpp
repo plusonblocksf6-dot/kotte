@@ -32,6 +32,8 @@ namespace kotte
         // same seed produces the same layout and enemy headings.
         populate_entities();
         initialize_enemies();
+        // Pickups use no random rolls, so adding them keeps the seed's layout.
+        spawn_pickups();
 
         // Never ask for more enemies than this seed generated, so the objective
         // can always be completed. Every enemy is reachable because crates are
@@ -73,6 +75,7 @@ namespace kotte
         assert(place_bomb_requests_.empty());
         assert(bomb_detonated_facts_.empty());
         assert(destroy_entity_requests_.empty());
+        assert(collect_pickup_requests_.empty());
         assert(!player_defeat_request_.has_value());
         frame_actions_ = {};
         collision_diagnostics_ = {};
@@ -123,6 +126,7 @@ namespace kotte
         update_enemies(delta_time);
         // After every mover: a bomb's owner has escaped once they stop overlapping it.
         update_bomb_owner_escapes();
+        detect_player_pickup_contact();
         // Runs after every mover so it sees this frame's final positions.
         detect_player_enemy_contact();
         queue_bomb_placement();
@@ -205,6 +209,9 @@ namespace kotte
         }
 
         apply_player_defeat();
+        // Before destructions: collecting queues the pickup's removal, which
+        // the destruction step below then carries out in this same frame.
+        apply_pickup_collections();
         apply_entity_destructions();
         apply_bomb_placements();
 
@@ -367,16 +374,90 @@ namespace kotte
         }
     }
 
+    void Application::detect_player_pickup_contact() {
+        // Uses the real footprint, not a grown hurt box: the player must
+        // actually step onto the pickup.
+        const Rectangle player_bounds = entity_collision_bounds(player());
+
+        // Broad phase: candidates near the player.
+        const SpatialQuery spatial_query = spatial_grid_.query(player_bounds);
+        for (const EntityHandle candidate_handle : spatial_query.entity_handles) {
+            const Entity* candidate = entities_.try_get(candidate_handle);
+            if (candidate == nullptr || candidate->kind != EntityKind::pickup) {
+                continue;
+            }
+
+            // Narrow phase: only true footprint overlap counts as collecting.
+            // Detection only records the request; the effect is applied later.
+            if (CheckCollisionRecs(player_bounds, entity_collision_bounds(*candidate))) {
+                collect_pickup_requests_.push_back({ candidate_handle });
+            }
+        }
+    }
+
+    void Application::apply_pickup_collections() {
+        for (const CollectPickupRequest& request : collect_pickup_requests_) {
+            // The pickup must still exist and still be a pickup. A stale handle
+            // resolves to nullptr thanks to the generation check.
+            const Entity* pickup = entities_.try_get(request.pickup);
+            if (pickup == nullptr || pickup->kind != EntityKind::pickup) {
+                continue;
+            }
+
+            // Apply-once guard: if this pickup is already queued for removal
+            // this frame, its effect has already been granted.
+            const bool already_collected = std::ranges::any_of(
+                destroy_entity_requests_,
+                [&](const DestroyEntityRequest& destroy) {
+                    return destroy.entity == request.pickup;
+                });
+            if (already_collected) {
+                continue;
+            }
+
+            // Gameplay effect: raise the range used by FUTURE bombs, capped.
+            const int raised = static_cast<int>(player_blast_range_) + blast_range_per_pickup_;
+            player_blast_range_ = static_cast<std::uint8_t>(
+                std::min(raised, static_cast<int>(max_blast_range_)));
+
+            // Removal goes through the normal safe lifetime path: grid, store.
+            destroy_entity_requests_.push_back({ request.pickup });
+        }
+
+        collect_pickup_requests_.clear();
+    }
+
+    void Application::spawn_pickups() {
+        for (const TileCoordinate tile : pickup_tiles_) {
+            assert(map_.contains(tile.column, tile.row));
+            assert(map_.at(tile.column, tile.row).type == TileType::floor);
+
+            const Entity pickup{ EntityKind::pickup, tile_centre(tile.column, tile.row) };
+            const EntityHandle handle = entities_.create(pickup);
+            // In the grid so the player's broad phase can find it. No update
+            // list: a pickup never moves and has no timer.
+            spatial_grid_.insert(handle, entity_world_bounds(pickup));
+        }
+    }
+
+    bool Application::is_pickup_tile(int column, int row) noexcept {
+        return std::ranges::any_of(pickup_tiles_, [=](TileCoordinate tile) {
+            return tile.column == column && tile.row == row;
+            });
+    }
+
     void Application::queue_bomb_placement() {
         if (!frame_actions_.place_bomb) {
             return;
         }
 
         // Capture values rather than an Entity reference because the request
-        // deliberately outlives this simulation phase.
+        // deliberately outlives this simulation phase. The current range is
+        // captured too, so this bomb keeps it whatever is collected later.
         place_bomb_requests_.push_back({
             player_handle_,
-            tile_centre(player().world_position)
+            tile_centre(player().world_position),
+            player_blast_range_
             });
     }
 
@@ -472,6 +553,7 @@ namespace kotte
         place_bomb_requests_.clear();
         bomb_detonated_facts_.clear();
         destroy_entity_requests_.clear();
+        collect_pickup_requests_.clear();
         player_defeat_request_.reset();
         blast_effects_.clear();
         frame_actions_ = {};
@@ -482,6 +564,7 @@ namespace kotte
         player_defeats_ = 0;
         round_state_ = RoundState::playing;
         enemies_defeated_ = 0;
+        player_blast_range_ = bomb_blast_range_;
         ++round_number_;
 
         // 5. Rebuild from the original seed: reset the dice, regenerate the map,
@@ -511,7 +594,8 @@ namespace kotte
                 .bomb_state = BombState{
                     .owner = request.owner,
                     .fuse_remaining = bomb_fuse_seconds_,
-                    .blast_range = bomb_blast_range_
+                    // The range chosen when the request was made, stored on the bomb.
+                    .blast_range = request.blast_range
                 }
             };
             const EntityHandle bomb_handle = entities_.create(bomb);
@@ -562,6 +646,7 @@ namespace kotte
                 std::erase(active_bomb_handles_, request.entity);
                 break;
             case EntityKind::crate:
+            case EntityKind::pickup:
             case EntityKind::player:
                 break;
             }
@@ -612,6 +697,9 @@ namespace kotte
                 // Confirmed blast contact: record the decision; the state
                 // change happens in the mutation phase.
                 request_player_defeat(DefeatCause::blast);
+                break;
+            case EntityKind::pickup:
+                // Pickups survive blasts and do not stop the ray.
                 break;
             }
         }
@@ -727,6 +815,7 @@ namespace kotte
             bounds.x = screen_position.x;
             bounds.y = screen_position.y;
             const RenderLayer layer = visible_candidate->kind == EntityKind::bomb
+                || visible_candidate->kind == EntityKind::pickup
                 ? RenderLayer::ground
                 : RenderLayer::world;
             const Color color = visible_candidate->kind == EntityKind::player && !player_is_alive()
@@ -803,12 +892,14 @@ namespace kotte
         // Round state and objective, centred at the top of the screen.
         {
             const std::string objective = std::format(
-                "round {} | {} | objective: defeat {} enemies ({}/{})",
+                "round {} | {} | objective: defeat {} enemies ({}/{}) | blast range: {}/{}",
                 round_number_,
                 round_state_name(round_state_),
                 enemy_target_,
                 std::min(enemies_defeated_, enemy_target_),
-                enemy_target_);
+                enemy_target_,
+                player_blast_range_,
+                max_blast_range_);
             constexpr int objective_size = 24;
             const int objective_width = MeasureText(objective.c_str(), objective_size);
             const int objective_x = (GetScreenWidth() - objective_width) / 2;
@@ -883,6 +974,11 @@ namespace kotte
                 }
 
                 const std::uint8_t kind_roll = random_.next<20, std::uint8_t>();
+                // Keep pickup tiles clear. This skip comes AFTER both rolls, so
+                // the random sequence and every other tile stay as before.
+                if (is_pickup_tile(x, y)) {
+                    continue;
+                }
                 // Week 3's inert bomb markers are no longer needed: every bomb
                 // now enters the world through the explicit lifetime path.
                 if (kind_roll >= 15 && kind_roll < 19) {
@@ -962,6 +1058,7 @@ namespace kotte
         case EntityKind::bomb: size = { 22.0f, 22.0f }; break;
         case EntityKind::crate: size = { 36.0f, 48.0f }; break;
         case EntityKind::enemy: size = { 28.0f, 30.0f }; break;
+        case EntityKind::pickup: size = { 20.0f, 20.0f }; break;
         }
 
         const Vector2 top_left = entity.world_position - Vector2{ size.x / 2.0f, size.y };
@@ -978,6 +1075,7 @@ namespace kotte
         case EntityKind::bomb: size = { 18.0f, 12.0f }; break;
         case EntityKind::crate: size = { 32.0f, 32.0f }; break;
         case EntityKind::enemy: size = { 24.0f, 14.0f }; break;
+        case EntityKind::pickup: size = { 18.0f, 14.0f }; break;
         }
 
         const Vector2 top_left = entity.world_position - Vector2{ size.x / 2.0f, size.y };
@@ -1060,6 +1158,9 @@ namespace kotte
             // Bombs are solid. Their owner's escape exception is handled per
             // mover in blocks_mover(), not by making the kind non-solid.
             return true;
+        case EntityKind::pickup:
+            // Non-solid: anyone can walk over it; only the player collects it.
+            return false;
         }
 
         return false;
@@ -1158,6 +1259,7 @@ namespace kotte
         case EntityKind::bomb: return bomb_color_;
         case EntityKind::crate: return crate_color_;
         case EntityKind::enemy: return enemy_color_;
+        case EntityKind::pickup: return pickup_color_;
         }
         return MAGENTA;
     }
