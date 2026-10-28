@@ -74,6 +74,7 @@ namespace kotte
             Vector2 player_movement_direction{};
             bool place_bomb = false;
             bool restart_round = false;
+            bool activate_shield = false;
         };
 
         struct PlaceBombRequest final {
@@ -128,6 +129,7 @@ namespace kotte
         void update_enemies(float delta_time);
         void detect_player_enemy_contact();
         void update_bomb_owner_escapes();
+        void update_shield(float delta_time) noexcept;
         void detect_player_pickup_contact();
         void apply_pickup_collections();
         void spawn_pickups();
@@ -160,6 +162,8 @@ namespace kotte
         [[nodiscard]] Entity& player() noexcept;
         [[nodiscard]] const Entity& player() const noexcept;
         [[nodiscard]] bool player_is_alive() const noexcept;
+        [[nodiscard]] bool player_is_shielded() const noexcept;
+        [[nodiscard]] bool shield_halo_visible() const noexcept;
         [[nodiscard]] bool round_is_playing() const noexcept;
         [[nodiscard]] bool objective_complete() const noexcept;
         [[nodiscard]] static const char* round_state_name(RoundState state) noexcept;
@@ -176,7 +180,7 @@ namespace kotte
         [[nodiscard]] bool tile_has_live_bomb(Vector2 world_position) const noexcept;
         [[nodiscard]] static Vector2 cardinal_vector(CardinalDirection direction) noexcept;
         [[nodiscard]] CardinalDirection different_enemy_direction(CardinalDirection current_direction);
-        [[nodiscard]] bool owner_has_active_bomb(EntityHandle owner) const noexcept;
+        [[nodiscard]] std::size_t active_bomb_count(EntityHandle owner) const noexcept;
         [[nodiscard]] static Vector2 tile_centre(Vector2 world_position) noexcept;
         [[nodiscard]] static Vector2 tile_centre(int column, int row) noexcept;
         [[nodiscard]] static Color entity_color(EntityKind kind) noexcept;
@@ -196,6 +200,8 @@ namespace kotte
         // of enemies the seed actually generated, so the round is always winnable.
         static constexpr std::size_t enemies_to_defeat_ = 10;
         static constexpr float bomb_fuse_seconds_ = 2.0f;
+        // How many live bombs one owner may have at once. Capacity is never stored as a counter: it is recomputed from the live bombs the owner actually has, so it restores itself whenever one disappears.
+        static constexpr std::size_t bomb_capacity_ = 3;
         static constexpr std::uint8_t bomb_blast_range_ = 3; // starting range
         // Each pickup adds one tile. Three fixed pickups take 3 to the cap of 6:
         // twice the starting reach, still well short of crossing a screen.
@@ -219,6 +225,14 @@ namespace kotte
         static constexpr Color defeated_player_color_{ 0x8a, 0x8f, 0x96, 0xff };
         static constexpr Color bomb_color_{ 0x20, 0x24, 0x2a, 0xff };
         static constexpr Color pickup_color_{ 0x5d, 0xd8, 0xe8, 0xff };
+        static constexpr Color shield_color_{ 0x9f, 0xb8, 0xff, 0x70 };
+        // Shield: press E. Protected for the duration; the cooldown starts at
+        // activation, so the next shield is ready 8 s after the last one began.
+        static constexpr float shield_duration_seconds_ = 3.0f;
+        static constexpr float shield_cooldown_seconds_ = 8.0f;
+        // The halo blinks during the last second so the end is visible in advance.
+        static constexpr float shield_warning_seconds_ = 1.0f;
+        static constexpr float shield_halo_margin_ = 6.0f;
         static constexpr Color blast_color_{ 0xf2, 0x8f, 0x3b, 0xe8 };
         static constexpr Color crate_color_{ 0xb0, 0x72, 0x3c, 0xff };
         static constexpr Color enemy_color_{ 0xd9, 0x4f, 0x70, 0xff };
@@ -251,6 +265,11 @@ namespace kotte
         std::size_t enemies_defeated_ = 0;
         std::size_t round_number_ = 1;
         std::uint8_t player_blast_range_ = bomb_blast_range_;
+        // Running total for this round, shown on the HUD to make chains visible.
+        std::size_t chain_detonations_ = 0;
+        float shield_remaining_ = 0.0f;          // > 0 means protected
+        float shield_cooldown_remaining_ = 0.0f; // > 0 means not ready yet
+        std::size_t shield_blocks_ = 0;          // hits absorbed this round
         bool exit_requested_ = false;
     };
 }

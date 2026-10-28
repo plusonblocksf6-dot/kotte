@@ -28,8 +28,7 @@ namespace kotte
     }
 
     void Application::populate_round() {
-        // Shared by the constructor and restart: same calls, same order, so the
-        // same seed produces the same layout and enemy headings.
+        // Shared by the constructor and restart: same calls, same order, so the same seed produces the same layout and enemy headings.
         populate_entities();
         initialize_enemies();
         // Pickups use no random rolls, so adding them keeps the seed's layout.
@@ -60,15 +59,24 @@ namespace kotte
         //
         // Keeping one call site per phase makes event lifetime and mutation
         // boundaries visible as the simulation grows.
-        begin_frame();
-        collect_frame_actions();
-        update_gameplay(delta_time);
-        update_timed_gameplay(delta_time);
-        resolve_gameplay_facts();
-        apply_structural_mutations();
-        update_presentation(delta_time);
-        render();
+        begin_frame(); 
+        collect_frame_actions(); // Keyboard actions 
+
+        // code doesn't change world structure during these 3 phases
+
+        update_gameplay(delta_time); // move things, detect contacts, queue requests
+        update_timed_gameplay(delta_time); // bomb fuses
+        resolve_gameplay_facts(); // explosions decide what tehy hit
+
+        //
+
+        apply_structural_mutations(); // entities are created or destroyed here
+        update_presentation(delta_time); // effect timers, camera
+        render(); // Simply drawing
     }
+
+    // Only player, bomb, crate, enemy, pickups are entities. 
+    // The bomblast is not an entity
 
     void Application::begin_frame() noexcept {
         // Every request must be consumed by the previous frame's mutation phase.
@@ -81,19 +89,21 @@ namespace kotte
         collision_diagnostics_ = {};
     }
 
-    void Application::collect_frame_actions() noexcept {
-        if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_Q)) {
+    void Application::collect_frame_actions() noexcept 
+    {
+        if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_Q))
+        {
             request_exit();
         }
 
-        // Once the round is won or lost, input produces no gameplay intent:
-        // no movement and no bombs. Quitting and restarting still work.
+        // Once the round is won or lost, input produces no gameplay intent: no movement and no bombs. Quitting and restarting still work.
         if (!round_is_playing()) {
             frame_actions_.restart_round = IsKeyPressed(KEY_R);
             return;
         }
 
         frame_actions_.place_bomb = IsKeyPressed(KEY_SPACE);
+        frame_actions_.activate_shield = IsKeyPressed(KEY_E);
 
         Vector2& movement_direction = frame_actions_.player_movement_direction;
         if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) {
@@ -122,14 +132,19 @@ namespace kotte
         }
 
         // The player and every enemy are movers; each asks its own collision question.
-        update_player(delta_time);
-        update_enemies(delta_time);
+        // First, so the shield state is settled before any contact check this
+        // frame (enemy contact below, blasts in resolve_gameplay_facts()).
+
+        update_shield(delta_time); //decreases the shield timer and updates whether protection is active.
+        update_bomb_owner_escapes();// updates bomb-owner collision exceptions.
+        update_player(delta_time); // moves the player.
+        update_enemies(delta_time); //moves the enemies
         // After every mover: a bomb's owner has escaped once they stop overlapping it.
-        update_bomb_owner_escapes();
-        detect_player_pickup_contact();
+        
+        detect_player_pickup_contact(); //  detects pickups.
         // Runs after every mover so it sees this frame's final positions.
-        detect_player_enemy_contact();
-        queue_bomb_placement();
+        detect_player_enemy_contact(); // checks whether an enemy has hit the player.
+        queue_bomb_placement(); // queues bomb placement.
     }
 
     void Application::update_timed_gameplay(float delta_time) {
@@ -173,7 +188,13 @@ namespace kotte
             return;
         }
 
-        for (const BombDetonated& fact : bomb_detonated_facts_) {
+        // Index loop, not a range-for: a chained bomb appends a new fact to this
+        // vector while we are inside the loop. push_back may reallocate, which
+        // would invalidate a range-for's iterator. The size is re-read every
+        // pass, so chained facts are resolved in this same frame.
+        for (std::size_t fact_index = 0; fact_index < bomb_detonated_facts_.size(); ++fact_index) {
+            // Copy, not reference: a later push_back may move the vector's storage.
+            const BombDetonated fact = bomb_detonated_facts_[fact_index];
             BlastEffect effect;
             effect.remaining_seconds = blast_effect_seconds_;
             effect.tile_centres.reserve(static_cast<std::size_t>(fact.blast_range) * 4 + 1);
@@ -201,16 +222,14 @@ namespace kotte
     void Application::apply_structural_mutations() {
         // Entity storage and every derived index change only at this boundary.
 
-        // Restart is the largest structural mutation of all, so it happens here
-        // too. It replaces the whole round, so nothing else is applied this frame.
+        // Restart is the largest structural mutation of all, so it happens here too. It replaces the whole round, so nothing else is applied this frame.
         if (frame_actions_.restart_round) {
             restart_round();
             return;
         }
 
         apply_player_defeat();
-        // Before destructions: collecting queues the pickup's removal, which
-        // the destruction step below then carries out in this same frame.
+        // Before destructions: collecting queues the pickup's removal, which the destruction step below then carries out in this same frame.
         apply_pickup_collections();
         apply_entity_destructions();
         apply_bomb_placements();
@@ -446,19 +465,33 @@ namespace kotte
             });
     }
 
-    void Application::queue_bomb_placement() {
+    void Application::queue_bomb_placement() 
+    {
         if (!frame_actions_.place_bomb) {
             return;
         }
 
-        // Capture values rather than an Entity reference because the request
-        // deliberately outlives this simulation phase. The current range is
-        // captured too, so this bomb keeps it whatever is collected later.
-        place_bomb_requests_.push_back({
+        // Capture values rather than an Entity reference because the request deliberately outlives this simulation phase. The current range is captured too, so this bomb keeps it whatever is collected later.
+        place_bomb_requests_.push_back
+        ({
             player_handle_,
             tile_centre(player().world_position),
             player_blast_range_
-            });
+         });
+    }
+
+    void Application::update_shield(float delta_time) noexcept {
+        // Both timers count down to zero and stop there.
+        shield_remaining_ = std::max(0.0f, shield_remaining_ - delta_time);
+        shield_cooldown_remaining_ = std::max(0.0f, shield_cooldown_remaining_ - delta_time);
+
+        // ACTIVATION RULE: E starts the shield only when the cooldown has run
+        // out. Pressing E while protected or cooling down does nothing, so the
+        // shield can never be extended or chained into permanent protection.
+        if (frame_actions_.activate_shield && shield_cooldown_remaining_ <= 0.0f) {
+            shield_remaining_ = shield_duration_seconds_;
+            shield_cooldown_remaining_ = shield_cooldown_seconds_;
+        }
     }
 
     void Application::request_player_defeat(DefeatCause cause) noexcept {
@@ -467,6 +500,17 @@ namespace kotte
         if (!round_is_playing() || !player_is_alive() || player_defeat_request_.has_value()) {
             return;
         }
+
+        // SHIELD: contact detection still runs and still counts as a hit (see
+        // the HUD's hurt-check line); the shield only refuses the consequence.
+        // Every damage source goes through this one function, so this single
+        // check covers both enemies and blasts. When the timer reaches zero the
+        // check stops refusing and damage works exactly as before.
+        if (player_is_shielded()) {
+            ++shield_blocks_;
+            return;
+        }
+
         player_defeat_request_ = PlayerDefeatRequest{ cause };
     }
 
@@ -565,6 +609,10 @@ namespace kotte
         round_state_ = RoundState::playing;
         enemies_defeated_ = 0;
         player_blast_range_ = bomb_blast_range_;
+        chain_detonations_ = 0;
+        shield_remaining_ = 0.0f;
+        shield_cooldown_remaining_ = 0.0f;
+        shield_blocks_ = 0;
         ++round_number_;
 
         // 5. Rebuild from the original seed: reset the dice, regenerate the map,
@@ -580,10 +628,12 @@ namespace kotte
     void Application::apply_bomb_placements() {
         for (const PlaceBombRequest& request : place_bomb_requests_) {
             const Entity* owner = entities_.try_get(request.owner);
-            // Reject: owner gone or not a player, owner already has a bomb, or
-            // a live bomb already occupies this tile.
+            // Reject: owner gone or not a player, owner already at capacity, or
+            // a live bomb already occupies this tile. The count is taken now, in
+            // the mutation phase, after this frame's destructions have run, so a
+            // bomb that exploded this frame has already freed its slot.
             if (owner == nullptr || owner->kind != EntityKind::player
-                || owner_has_active_bomb(request.owner)
+                || active_bomb_count(request.owner) >= bomb_capacity_
                 || tile_has_live_bomb(request.world_position)) {
                 continue;
             }
@@ -678,7 +728,8 @@ namespace kotte
         bool blocked_by_crate = false;
 
         for (const EntityHandle handle : contacts.entity_handles) {
-            const Entity* candidate = entities_.try_get(handle);
+            // Mutable: a chained bomb has its detonation flag set below.
+            Entity* candidate = entities_.try_get(handle);
             if (candidate == nullptr
                 || !CheckCollisionRecs(tile_bounds, entity_collision_bounds(*candidate))) {
                 continue;
@@ -686,6 +737,32 @@ namespace kotte
 
             switch (candidate->kind) {
             case EntityKind::bomb:
+                // CHAIN REACTION: a live bomb that has not detonated yet is set
+                // off through the same fact pipeline as a fuse running out. The
+                // detonation_requested flag is the "at most once" guard: it is
+                // checked here AND by the fuse in update_timed_gameplay(), so a
+                // bomb can be triggered by a blast or by its fuse, never both,
+                // and never twice by two overlapping blasts.
+                if (candidate->bomb_state.has_value()
+                    && !candidate->bomb_state->detonation_requested) {
+                    BombState& state = *candidate->bomb_state;
+                    state.detonation_requested = true;
+                    ++chain_detonations_;
+
+                    // Same value-only fact a fuse would produce. It is appended
+                    // to the list resolve_gameplay_facts() is walking, so this
+                    // bomb explodes later in THIS frame, before its fuse expires.
+                    bomb_detonated_facts_.push_back({
+                        handle,
+                        state.owner,
+                        candidate->world_position,
+                        state.blast_range
+                        });
+                }
+                // Removal is handled when its own fact is resolved (and is
+                // de-duplicated by the generation check if pushed twice).
+                destroy_entity_requests_.push_back({ handle });
+                break;
             case EntityKind::enemy:
                 destroy_entity_requests_.push_back({ handle });
                 break;
@@ -828,6 +905,24 @@ namespace kotte
                 visible_candidate->world_position.y,
                 entity_roundness(visible_candidate->kind)
                 });
+
+            // Presentation only: a translucent halo drawn over the player while
+            // shielded. It reads shield state but never changes it.
+            if (visible_candidate->kind == EntityKind::player && shield_halo_visible()) {
+                const Rectangle halo{
+                    bounds.x - shield_halo_margin_,
+                    bounds.y - shield_halo_margin_,
+                    bounds.width + shield_halo_margin_ * 2.0f,
+                    bounds.height + shield_halo_margin_ * 2.0f
+                };
+                renderer_.submit({
+                    halo,
+                    shield_color_,
+                    RenderLayer::effect,
+                    visible_candidate->world_position.y,
+                    1.0f
+                    });
+            }
         }
         renderer_.sort();
         renderer_.execute();
@@ -863,10 +958,11 @@ namespace kotte
         DrawText(diagnostics.c_str(), 10, 34, 20, RAYWHITE);
 
         diagnostics = std::format(
-            "enemies updated: {} | active bombs: {} | blast effects: {}",
+            "enemies updated: {} | active bombs: {} | blast effects: {} | chain detonations: {}",
             collision_diagnostics_.enemy_updates,
             active_bomb_handles_.size(),
-            blast_effects_.size());
+            blast_effects_.size(),
+            chain_detonations_);
         DrawText(diagnostics.c_str(), 10, 58, 20, RAYWHITE);
 
         diagnostics = std::format(
@@ -889,22 +985,38 @@ namespace kotte
             collision_diagnostics_.hurt_hits);
         DrawText(diagnostics.c_str(), 10, 130, 20, RAYWHITE);
 
+        if (player_is_shielded()) {
+            diagnostics = std::format("shield: ACTIVE {:.1f}s | hits absorbed: {}",
+                shield_remaining_, shield_blocks_);
+        }
+        else if (shield_cooldown_remaining_ > 0.0f) {
+            diagnostics = std::format("shield: OFF - cooldown {:.1f}s | hits absorbed: {}",
+                shield_cooldown_remaining_, shield_blocks_);
+        }
+        else {
+            diagnostics = std::format("shield: READY (press E) | hits absorbed: {}", shield_blocks_);
+        }
+        DrawText(diagnostics.c_str(), 10, 154, 20,
+            player_is_shielded() ? Color{ 0x9f, 0xb8, 0xff, 0xff } : RAYWHITE);
+
         // Round state and objective, centred at the top of the screen.
         {
             const std::string objective = std::format(
-                "round {} | {} | objective: defeat {} enemies ({}/{}) | blast range: {}/{}",
+                "round {} | {} | objective: defeat {} enemies ({}/{}) | bombs: {}/{} | blast range: {}/{}",
                 round_number_,
                 round_state_name(round_state_),
                 enemy_target_,
                 std::min(enemies_defeated_, enemy_target_),
                 enemy_target_,
+                active_bomb_count(player_handle_),
+                bomb_capacity_,
                 player_blast_range_,
                 max_blast_range_);
             constexpr int objective_size = 24;
             const int objective_width = MeasureText(objective.c_str(), objective_size);
             const int objective_x = (GetScreenWidth() - objective_width) / 2;
-            DrawRectangle(objective_x - 10, 160, objective_width + 20, objective_size + 12, Color{ 0, 0, 0, 160 });
-            DrawText(objective.c_str(), objective_x, 166, objective_size, RAYWHITE);
+            DrawRectangle(objective_x - 10, 184, objective_width + 20, objective_size + 12, Color{ 0, 0, 0, 160 });
+            DrawText(objective.c_str(), objective_x, 190, objective_size, RAYWHITE);
         }
 
         if (!round_is_playing()) {
@@ -955,7 +1067,7 @@ namespace kotte
             "world: {} x {} tiles | {} total", map_.width(), map_.height(), map_.tile_count());
         DrawText(diagnostics.c_str(), 10, window_.height() - 54, 20, RAYWHITE);
 
-        DrawText("move: WASD/arrows | bomb: Space | restart (after round): R | quit: Q/Escape", 10, window_.height() - 30, 20, LIGHTGRAY);
+        DrawText("move: WASD/arrows | bomb: Space | shield: E | restart (after round): R | quit: Q/Escape", 10, window_.height() - 30, 20, LIGHTGRAY);
     }
 
     void Application::populate_entities() {
@@ -1032,6 +1144,22 @@ namespace kotte
 
     bool Application::player_is_alive() const noexcept {
         return player_state_ == PlayerState::alive;
+    }
+
+    bool Application::player_is_shielded() const noexcept {
+        return shield_remaining_ > 0.0f;
+    }
+
+    bool Application::shield_halo_visible() const noexcept {
+        if (!player_is_shielded()) {
+            return false;
+        }
+        if (shield_remaining_ > shield_warning_seconds_) {
+            return true;
+        }
+        // Last second: blink 5 times a second (0.1 s on, 0.1 s off) so the
+        // player can see protection is about to end.
+        return std::fmod(shield_remaining_, 0.2f) > 0.1f;
     }
 
     bool Application::round_is_playing() const noexcept {
@@ -1229,13 +1357,16 @@ namespace kotte
         return static_cast<CardinalDirection>(new_value);
     }
 
-    bool Application::owner_has_active_bomb(EntityHandle owner) const noexcept {
-        return std::ranges::any_of(active_bomb_handles_, [this, owner](EntityHandle bomb_handle) {
-            const Entity* bomb = entities_.try_get(bomb_handle);
-            return bomb != nullptr
-                && bomb->bomb_state.has_value()
-                && bomb->bomb_state->owner == owner;
-            });
+    std::size_t Application::active_bomb_count(EntityHandle owner) const noexcept
+    {
+        
+        return static_cast<std::size_t>(std::ranges::count_if(active_bomb_handles_,[this, owner](EntityHandle bomb_handle)
+            {
+                const Entity* bomb = entities_.try_get(bomb_handle);
+                return bomb != nullptr
+                    && bomb->bomb_state.has_value()
+                    && bomb->bomb_state->owner == owner;
+            }));
     }
 
     Vector2 Application::tile_centre(Vector2 world_position) noexcept {
