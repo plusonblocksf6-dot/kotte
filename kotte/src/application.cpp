@@ -626,7 +626,8 @@ namespace kotte
     }
 
     void Application::apply_bomb_placements() {
-        for (const PlaceBombRequest& request : place_bomb_requests_) {
+        for (const PlaceBombRequest& request : place_bomb_requests_) 
+        {
             const Entity* owner = entities_.try_get(request.owner);
             // Reject: owner gone or not a player, owner already at capacity, or
             // a live bomb already occupies this tile. The count is taken now, in
@@ -1357,9 +1358,11 @@ namespace kotte
         return static_cast<CardinalDirection>(new_value);
     }
 
+
+    // counter function for the bombs
     std::size_t Application::active_bomb_count(EntityHandle owner) const noexcept
     {
-        
+        //Go through every bomb handle in the list, and count the ones that still exist, are really bombs, and belong to this owner
         return static_cast<std::size_t>(std::ranges::count_if(active_bomb_handles_,[this, owner](EntityHandle bomb_handle)
             {
                 const Entity* bomb = entities_.try_get(bomb_handle);
